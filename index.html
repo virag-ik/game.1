@@ -1,306 +1,360 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>SHRINKZONE SOLO - 100 Player Battle Royale</title>
+  <title>SHRINKZONE TOWER - 100 Player Skyscraper Royale</title>
   <meta charset="utf-8">
   <style>
-    body { margin:0; background:#000; overflow:hidden; font-family: 'Courier New', monospace; }
-    canvas { image-rendering: pixelated; }
-    #ui { position:absolute; top:10px; left:10px; color:#0f0; text-shadow: 0 0 10px #0f0; z-index:10; }
-    #minimap { position:absolute; bottom:20px; right:20px; width:200px; height:200px; border:3px solid #0f0; opacity:0.8; }
-    #killfeed { position:absolute; top:60px; right:20px; color:#f33; font-weight:bold; }
+    body{margin:0;background:#000;overflow:hidden;font-family:monospace}
+    canvas{image-rendering:pixelated}
+    #ui{position:absolute;top:10px;left:10px;color:#0f0;text-shadow:0 0 8px #0f0;z-index:10}
+    #minimap{position:absolute;bottom:20px;right:20px;width:220px;height:220px;border:3px solid #0f0;opacity:0.9}
+    #killfeed{position:absolute;top:60px;right:20px;color:#f33;font-weight:bold}
+    #floorDisplay{position:absolute;top:10px;right:20px;color:#0ff;font-size:20px;text-shadow:0 0 10px #0ff}
   </style>
 </head>
 <body>
   <div id="ui">
-    <div>ALIVE: <span id="alive">100</span>/100</div>
-    <div>ZONE CLOSES IN: <span id="timer">45</span>s</div>
+    <div>ALIVE: <span id="alive">100</span></div>
+    <div>ZONE CLOSES IN: <span id="timer">60</span>s</div>
     <div>KILLS: <span id="kills">0</span></div>
   </div>
+  <div id="floorDisplay">FLOOR <span id="floor">0</span></div>
   <div id="killfeed"></div>
   <canvas id="minimap"></canvas>
 
   <script>
     const canvas = document.createElement('canvas');
-    canvas.width = innerWidth;
-    canvas.height = innerHeight;
+    canvas.width = innerWidth; canvas.height = innerHeight;
     document.body.appendChild(canvas);
     const ctx = canvas.getContext('2d');
 
-    const MAP_SIZE = 3000;
-    const CENTER = MAP_SIZE / 2;
-    let zoneRadius = 1400;
-    let nextZoneRadius = 1400;
-    let zoneTimer = 45;
+    const MAP = 12000;
+    const CENTER = MAP/2;
+    const FLOORS = 10;
+    let currentFloor = 0;
+
+    let zoneRadius = 5500;
+    let zoneTimer = 60;
 
     const player = {
-      x: CENTER + (Math.random() - 0.5) * 800,
-      y: CENTER + (Math.random() - 0.5) * 800,
-      angle: 0,
-      health: 100,
-      kills: 0,
-      color: '#00ff00'
+      x: Math.random()*MAP, y: Math.random()*MAP, floor: 0,
+      angle: 0, speed: 0, frame: 0, shooting: false, recoil: 0,
+      health: 100, kills: 0
     };
 
-    const bots = [];
+    const entities = []; // bots + corpses
     const bullets = [];
-    const trees = [];
-    const loot = [];
+    const walls = [];
+    const stairs = [];
 
-    // Generate 99 bots
-    for(let i = 0; i < 99; i++) {
-      bots.push({
-        x: CENTER + (Math.random() - 0.5) * 2500,
-        y: CENTER + (Math.random() - 0.5) * 2500,
-        angle: Math.random() * Math.PI * 2,
-        health: 100,
-        targetX: 0, targetY: 0,
-        state: 'roam', // roam → runToZone → shoot
-        color: `hsl(${i*3.6}, 100%, 50%)`
+    // ───── Generate 10-floor building ─────
+    for(let f=0; f<FLOORS; f++){
+      // Big columns & walls
+      for(let i=0; i<180; i++){
+        walls.push({
+          x: 800 + Math.random()*(MAP-1600),
+          y: 800 + Math.random()*(MAP-1600),
+          w: 120 + Math.random()*300,
+          h: 120 + Math.random()*300,
+          floor: f
+        });
+      }
+      // Stairs (20 per floor)
+      for(let i=0; i<20; i++){
+        stairs.push({
+          x: 1000 + Math.random()*(MAP-2000),
+          y: 1000 + Math.random()*(MAP-2000),
+          floor: f
+        });
+      }
+    }
+
+    // ───── 99 Bots ─────
+    for(let i=0; i<99; i++){
+      const floor = Math.floor(Math.random()*FLOORS);
+      entities.push({
+        x: Math.random()*MAP, y: Math.random()*MAP, floor,
+        angle: Math.random()*Math.PI*2,
+        health: 100, speed: 0, frame: 0,
+        target: null, state: 'roam', // roam → chase → shoot
+        color: `hsl(${i*3.64},80%,50%)`,
+        recoil: 0, shooting: false
       });
     }
 
-    // Trees & grass
-    for(let i = 0; i < 800; i++) {
-      trees.push({
-        x: Math.random() * MAP_SIZE,
-        y: Math.random() * MAP_SIZE,
-        size: 30 + Math.random() * 40
-      });
-    }
-
-    // Loot crates
-    for(let i = 0; i < 40; i++) {
-      loot.push({
-        x: Math.random() * MAP_SIZE,
-        y: Math.random() * MAP_SIZE,
-        taken: false
-      });
-    }
-
-    // Input
+    // ───── Input ─────
     const keys = {};
     window.onkeydown = e => keys[e.key.toLowerCase()] = true;
     window.onkeyup = e => keys[e.key.toLowerCase()] = false;
     canvas.onmousemove = e => {
-      const dx = e.clientX - innerWidth/2;
-      const dy = e.clientY - innerHeight/2;
+      const dx = e.clientX - innerWidth/2 + (player.x - innerWidth/2);
+      const dy = e.clientY - innerHeight/2 + (player.y - innerHeight/2);
       player.angle = Math.atan2(dy, dx);
     };
     canvas.onclick = () => shoot(player);
 
-    function shoot(p) {
+    function shoot(entity){
+      if(entity.recoil > 0) return;
+      entity.shooting = true;
+      entity.recoil = 8;
       bullets.push({
-        x: p.x,
-        y: p.y,
-        vx: Math.cos(p.angle) * 20,
-        vy: Math.sin(p.angle) * 20,
-        owner: p === player ? 'player' : 'bot',
-        damage: 34
+        x: entity.x + Math.cos(entity.angle)*35,
+        y: entity.y + Math.sin(entity.angle)*35,
+        vx: Math.cos(entity.angle)*22,
+        vy: Math.sin(entity.angle)*22,
+        owner: entity === player ? 'player' : 'bot'
       });
     }
 
-    // Bot AI (simple but deadly)
-    function updateBots() {
-      bots.forEach(bot => {
-        if (bot.health <= 0) return;
+    // ───── Bot AI ─────
+    function updateBots(){
+      entities.forEach(bot => {
+        if(bot.health <= 0) return;
 
-        const distToCenter = Math.hypot(bot.x - CENTER, bot.y - CENTER);
-
-        // Prioritize running into zone if outside
-        if (distToCenter > zoneRadius + 50) {
-          bot.state = 'runToZone';
-          const angleToCenter = Math.atan2(CENTER - bot.y, CENTER - bot.x);
-          bot.x += Math.cos(angleToCenter) * 2.5;
-          bot.y += Math.sin(angleToCenter) * 2.5;
-        } 
-        // Inside zone → hunt player
-        else {
-          bot.state = 'hunt';
-          const dx = player.x - bot.x;
-          const dy = player.y - bot.y;
-          const dist = Math.hypot(dx, dy);
-          bot.angle = Math.atan2(dy, dx);
-
-          if (dist > 300) {
-            bot.x += Math.cos(bot.angle) * 1.8;
-            bot.y += Math.sin(bot.angle) * 1.8;
+        // Find nearest enemy (player or alive bot) on same floor
+        let nearest = null, dist = 550;
+        if(Math.hypot(bot.x-player.x, bot.y-player.y) < dist && bot.floor===player.floor){
+          nearest = player; dist = Math.hypot(bot.x-player.x, bot.y-player.y);
+        }
+        entities.forEach(other=>{
+          if(other!==bot && other.health>0 && other.floor===bot.floor){
+            const d = Math.hypot(bot.x-other.x, bot.y-other.y);
+            if(d < dist){ dist = d; nearest = other; }
           }
-          if (dist < 600 && Math.random() < 0.03) {
-            shoot(bot);
+        });
+
+        if(nearest){
+          bot.target = nearest;
+          bot.state = 'chase';
+          const angle = Math.atan2(nearest.y-bot.y, nearest.x-bot.x);
+          bot.angle = angle;
+          if(dist > 300) {
+            bot.x += Math.cos(angle)*1.7;
+            bot.y += Math.sin(angle)*1.7;
           }
+          if(dist < 300 && Math.random()<0.04) shoot(bot);
+        } else {
+          bot.state = 'roam';
+          if(Math.random()<0.02) bot.angle += (Math.random()-0.5)*0.8;
+          bot.x += Math.cos(bot.angle)*0.8;
+          bot.y += Math.sin(bot.angle)*0.8;
+        }
+
+        // Run to zone if outside
+        const zoneDist = Math.hypot(bot.x-CENTER, bot.y-CENTER);
+        if(zoneDist > zoneRadius + 100){
+          const toCenter = Math.atan2(CENTER-bot.y, CENTER-bot.x);
+          bot.x += Math.cos(toCenter)*3;
+          bot.y += Math.sin(toCenter)*3;
         }
       });
     }
 
-    // Game loop
-    setInterval(() => {
+    // ───── Game Loop ─────
+    setInterval(()=>{
       // Player movement
-      const speed = keys['shift'] ? 7 : 4;
-      if(keys['w']) player.y -= speed;
-      if(keys['s']) player.y += speed;
-      if(keys['a']) player.x -= speed;
-      if(keys['d']) player.x += speed;
+      player.speed = keys['shift']?5:3;
+      if(keys['w']) player.y -= player.speed;
+      if(keys['s']) player.y += player.speed;
+      if(keys['a']) player.x -= player.speed;
+      if(keys['d']) player.x += player.speed;
+
+      // Stair use
+      if(keys['e']){
+        stairs.forEach(s=>{
+          if(s.floor===player.floor && Math.hypot(s.x-player.x,s.y-player.y)<80){
+            player.floor = (player.floor + (keys['shift']?-1:1) + FLOORS)%FLOORS;
+            currentFloor = player.floor;
+            keys['e']=false;
+          }
+        });
+      }
 
       updateBots();
 
-      // Bullets
-      for(let i = bullets.length-1; i >= 0; i--) {
+      // Bullets & hits
+      for(let i=bullets.length-1;i>=0;i--){
         const b = bullets[i];
-        b.x += b.vx;
-        b.y += b.vy;
+        b.x += b.vx; b.y += b.vy;
 
         // Hit player
-        if (b.owner !== 'player' && Math.hypot(b.x - player.x, b.y - player.y) < 20) {
-          player.health -= b.damage;
+        if(b.owner!=='player' && Math.hypot(b.x-player.x,b.y-player.y)<25 && player.floor===currentFloor){
+          player.health -= 34;
           bullets.splice(i,1);
-          if (player.health <= 0) {
-            alert(`YOU DIED. Final placement: #${bots.filter(b=>b.health>0).length + 1}\nKills: ${player.kills}`);
+          if(player.health<=0){
+            alert(`YOU DIED • Placement #${entities.filter(e=>e.health>0).length+1} • Kills: ${player.kills}`);
             location.reload();
           }
           continue;
         }
 
         // Hit bots
-        bots.forEach(bot => {
-          if (bot.health > 0 && Math.hypot(b.x - bot.x, b.y - bot.y) < 20 && b.owner === 'player') {
-            bot.health -= b.damage;
-            if (bot.health <= 0) {
+        entities.forEach(e=>{
+          if(e.health>0 && b.owner==='player' && Math.hypot(b.x-e.x,b.y-e.y)<25 && e.floor===player.floor){
+            e.health -= 34;
+            if(e.health<=0){
               player.kills++;
-              document.getElementById('kills').textContent = player.kills;
-              addKillFeed("You killed " + bot.color);
+              document.getElementById('kills').innerText = player.kills;
+              addKillFeed("You killed a survivor");
+              e.deathTimer = 180;
+              e.squash = 1;
             }
           }
         });
 
-        if (b.x < 0 || b.x > MAP_SIZE || b.y < 0 || b.y > MAP_SIZE) bullets.splice(i,1);
+        if(b.x<0||b.x>MAP||b.y<0||b.y>MAP) bullets.splice(i,1);
       }
 
       // Zone shrink
       zoneTimer--;
-      document.getElementById('timer').textContent = zoneTimer;
-      if (zoneTimer <= 0) {
-        nextZoneRadius = zoneRadius * 0.7;
-        zoneTimer = Math.max(20, zoneTimer);
-        setTimeout(() => zoneRadius = nextZoneRadius, 8000); // warning phase
+      document.getElementById('timer').innerText = zoneTimer;
+      if(zoneTimer<=0){
+        zoneRadius *= 0.75;
+        zoneTimer = Math.max(30, zoneTimer+45);
       }
+      if(Math.hypot(player.x-CENTER,player.y-CENTER) > zoneRadius+50) player.health -= 1.5;
 
-      // Kill outside zone
-      if (Math.hypot(player.x - CENTER, player.y - CENTER) > zoneRadius + 30) {
-        player.health -= 2;
-      }
+      // Update alive count
+      const alive = 1 + entities.filter(e=>e.health>0).length;
+      document.getElementById('alive').innerText = alive;
+      document.getElementById('floor').innerText = currentFloor;
 
-      // Count alive
-      const alive = 1 + bots.filter(b => b.health > 0).length;
-      document.getElementById('alive').textContent = alive;
-
-      if (alive === 1 && player.health > 0) {
-        alert(`🥇 VICTORY! ${player.kills} KILLS 🥇`);
+      if(alive===1 && player.health>0){
+        alert(`VICTORY ROYALE! • ${player.kills} KILLS`);
         location.reload();
       }
 
       render();
-    }, 1000/60);
+    },1000/60);
 
-    function render() {
-      ctx.fillStyle = '#0a1a0a';
+    // ───── RENDER ─────
+    function drawHuman(e, isPlayer=false){
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(e.angle);
+
+      const legPhase = e.speed>0 ? Date.now()/120 % 4 : 0;
+      const legSwing = Math.sin(legPhase*Math.PI)*12;
+
+      // Legs
+      ctx.fillStyle = isPlayer?'#00ff00':'#222';
+      ctx.fillRect(-8, 8 + legSwing, 6, 20);
+      ctx.fillRect(2, 8 - legSwing, 6, 20);
+
+      // Body
+      ctx.fillStyle = isPlayer?'#00ff00':e.color;
+      ctx.fillRect(-12, -10, 24, 28);
+
+      // Head
+      ctx.fillStyle = isPlayer?'#00ff99':'#fff';
+      ctx.beginPath(); ctx.arc(0,-18,9,0,Math.PI*2); ctx.fill();
+
+      // Gun + recoil
+      ctx.fillStyle = '#ffff00';
+      ctx.translate(e.recoil*3,0);
+      ctx.fillRect(12, -4, 28, 8);
+      if(e.shooting){
+        ctx.fillStyle = '#ff9500';
+        ctx.fillRect(38, -6, 18, 12);
+      }
+
+      ctx.restore();
+      e.shooting = false;
+      if(e.recoil>0) e.recoil--;
+    }
+
+    function render(){
+      ctx.fillStyle = '#050505';
       ctx.fillRect(0,0,canvas.width,canvas.height);
 
-      // Camera follow player
       const camX = player.x - innerWidth/2;
       const camY = player.y - innerHeight/2;
       ctx.save();
       ctx.translate(-camX, -camY);
 
-      // Grass texture
-      ctx.fillStyle = '#112211';
-      ctx.fillRect(0,0,MAP_SIZE,MAP_SIZE);
+      // Floor opacity
+      const opacity = 1 - currentFloor*0.09;
+      ctx.globalAlpha = opacity;
 
-      // Trees
-      trees.forEach(t => {
-        ctx.fillStyle = '#003300';
-        ctx.fillRect(t.x - t.size/2, t.y - t.size/2, t.size, t.size);
-        ctx.fillStyle = '#006600';
-        ctx.beginPath();
-        ctx.arc(t.x, t.y - t.size/3, t.size/2, 0, Math.PI*2);
-        ctx.fill();
+      // Walls & columns
+      ctx.fillStyle = '#111';
+      walls.forEach(w=>{
+        if(w.floor===currentFloor)
+          ctx.fillRect(w.x-w.w/2, w.y-w.h/2, w.w, w.h);
       });
 
-      // Loot crates
-      loot.forEach(l => {
-        if (!l.taken && Math.hypot(l.x - player.x, l.y - player.y) < 50) l.taken = true;
-        if (!l.taken) {
-          ctx.fillStyle = '#ff0';
-          ctx.fillRect(l.x-15, l.y-15, 30, 30);
-          ctx.fillStyle = '#ff0';
-          ctx.fillRect(l.x-10, l.y-20, 20, 10);
+      // Stairs
+      ctx.fillStyle = '#00ffff44';
+      stairs.forEach(s=>{
+        if(s.floor===currentFloor)
+          ctx.fillRect(s.x-30,s.y-30,60,60);
+      });
+
+      // Corpses
+      entities.forEach(e=>{
+        if(e.health<=0 && e.deathTimer>0){
+          ctx.save();
+          ctx.translate(e.x,e.y);
+          ctx.scale(1, e.squash||0.3);
+          ctx.globalAlpha = e.deathTimer/180;
+          drawHuman(e);
+          ctx.restore();
+          e.deathTimer--;
+          if(e.squash<1) e.squash += 0.04;
         }
       });
 
-      // Zone circle (glowing)
-      ctx.strokeStyle = '#00ffff88';
-      ctx.lineWidth = 15;
-      ctx.beginPath();
-      ctx.arc(CENTER, CENTER, zoneRadius, 0, Math.PI*2);
-      ctx.stroke();
+      // Alive bots on current floor
+      entities.filter(e=>e.health>0 && e.floor===currentFloor)
+             .forEach(e=>drawHuman(e));
 
-      // Bots
-      bots.forEach(bot => {
-        if (bot.health <= 0) return;
-        ctx.fillStyle = bot.color;
-        ctx.save();
-        ctx.translate(bot.x, bot.y);
-        ctx.rotate(bot.angle);
-        ctx.fillRect(-12, -12, 24, 24);
-        ctx.fillRect(10, -4, 20, 8); // gun
-        ctx.restore();
-      });
-
-      // Player (neon green)
-      ctx.fillStyle = '#00ff00';
-      ctx.save();
-      ctx.translate(player.x, player.y);
-      ctx.rotate(player.angle);
-      ctx.fillRect(-15, -15, 30, 30);
-      ctx.fillStyle = '#00ff99';
-      ctx.fillRect(15, -5, 25, 10); // gun
-      ctx.restore();
+      // Player
+      drawHuman(player, true);
 
       // Bullets
-      ctx.fillStyle = '#ffff00';
-      bullets.forEach(b => ctx.fillRect(b.x-4, b.y-4, 8, 8));
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#ffff00';
+      ctx.lineWidth = 4;
+      bullets.forEach(b=>{
+        ctx.beginPath();
+        ctx.moveTo(b.x - b.vx*2, b.y - b.vy*2);
+        ctx.lineTo(b.x + b.vx*2, b.y + b.vy*2);
+        ctx.stroke();
+      });
+
+      // Zone
+      ctx.globalAlpha = 0.3;
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 30;
+      ctx.beginPath();
+      ctx.arc(CENTER,CENTER,zoneRadius,0,Math.PI*2);
+      ctx.stroke();
 
       ctx.restore();
 
       // Minimap
       const mini = document.getElementById('minimap');
-      const mctx = mini.getContext('2d');
-      mini.width = 200; mini.height = 200;
-      mctx.fillStyle = '#001100';
-      mctx.fillRect(0,0,200,200);
-      mctx.strokeStyle = '#0f0';
-      mctx.lineWidth = 3;
-      mctx.beginPath();
-      mctx.arc(100,100, (zoneRadius/MAP_SIZE)*100, 0, Math.PI*2);
-      mctx.stroke();
+      const m = mini.getContext('2d');
+      mini.width=220; mini.height=220;
+      m.fillStyle='#001100'; m.fillRect(0,0,220,220);
+      m.strokeStyle='#0f0'; m.lineWidth=4;
+      m.beginPath(); m.arc(110,110,zoneRadius/MAP*110,0,Math.PI*2); m.stroke();
+
+      // Floor stack indicator
+      for(let f=0;f<FLOORS;f++){
+        m.fillStyle = f===currentFloor?'#0f0':'#004400';
+        m.fillRect(10, 20+f*18, 180, 14);
+      }
 
       // Player dot
-      mctx.fillStyle = '#0f0';
-      mctx.fillRect(100 + (player.x - CENTER)/MAP_SIZE*200 - 3, 100 + (player.y - CENTER)/MAP_SIZE*200 - 3, 6, 6);
-
-      // Bots dots
-      mctx.fillStyle = '#f00';
-      bots.filter(b=>b.health>0).forEach(b => {
-        mctx.fillRect(100 + (b.x - CENTER)/MAP_SIZE*200 - 1, 100 + (b.y - CENTER)/MAP_SIZE*200 - 1, 2, 2);
-      });
+      m.fillStyle='#0f0';
+      m.fillRect(110 + (player.x-CENTER)/MAP*200 -4, 110 + (player.y-CENTER)/MAP*200 -4, 8,8);
     }
 
-    function addKillFeed(msg) {
-      const div = document.createElement('div');
-      div.textContent = msg;
-      div.style.opacity = 1;
-      document.getElementById('killfeed').prepend(div);
-      setTimeout(() => div.style.opacity = 0, 3000);
+    function addKillFeed(t){ /* same as before */ 
+      const d=document.createElement('div'); d.textContent=t;
+      document.getElementById('killfeed').prepend(d);
+      setTimeout(()=>d.remove(),4000);
     }
 
     render();
