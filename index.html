@@ -1,114 +1,309 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>SHRINKZONE - Battle Royale</title>
+  <title>SHRINKZONE SOLO - 100 Player Battle Royale</title>
+  <meta charset="utf-8">
   <style>
-    body { margin:0; background:#000; overflow:hidden; font-family: monospace; }
+    body { margin:0; background:#000; overflow:hidden; font-family: 'Courier New', monospace; }
     canvas { image-rendering: pixelated; }
-    #ui { position:absolute; top:10px; left:10px; color:white; z-index: 10; background:rgba(0,0,0,0.5); padding:10px; border-radius:8px; }
-    #chat { position:absolute; bottom:10px; left:10px; color:#0f0; max-width:400px; }
+    #ui { position:absolute; top:10px; left:10px; color:#0f0; text-shadow: 0 0 10px #0f0; z-index:10; }
+    #minimap { position:absolute; bottom:20px; right:20px; width:200px; height:200px; border:3px solid #0f0; opacity:0.8; }
+    #killfeed { position:absolute; top:60px; right:20px; color:#f33; font-weight:bold; }
   </style>
 </head>
 <body>
   <div id="ui">
-    WASD = move • Click = shoot • Players: <span id="pc">0</span> • Alive: <span id="ac">0</span>
+    <div>ALIVE: <span id="alive">100</span>/100</div>
+    <div>ZONE CLOSES IN: <span id="timer">45</span>s</div>
+    <div>KILLS: <span id="kills">0</span></div>
   </div>
-  <div id="chat"></div>
+  <div id="killfeed"></div>
+  <canvas id="minimap"></canvas>
 
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
-    const socket = io();
     const canvas = document.createElement('canvas');
-    canvas.width = 2000; canvas.height = 2000;
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
     document.body.appendChild(canvas);
     const ctx = canvas.getContext('2d');
-    const view = {x:0, y:0};
 
-    let me = {}, players = {}, bullets = [];
-    const keys = {};
+    const MAP_SIZE = 3000;
+    const CENTER = MAP_SIZE / 2;
+    let zoneRadius = 1400;
+    let nextZoneRadius = 1400;
+    let zoneTimer = 45;
 
-    let safeRadius = 900;
-    let timeLeft = 45;
+    const player = {
+      x: CENTER + (Math.random() - 0.5) * 800,
+      y: CENTER + (Math.random() - 0.5) * 800,
+      angle: 0,
+      health: 100,
+      kills: 0,
+      color: '#00ff00'
+    };
 
-    socket.on('state', state => {
-      players = state.players;
-      bullets = state.bullets;
-      me = players[socket.id];
-      document.getElementById('pc').textContent = Object.keys(players).length;
-      document.getElementById('ac').textContent = Object.values(players).filter(p=>p.alive).length;
-    });
+    const bots = [];
+    const bullets = [];
+    const trees = [];
+    const loot = [];
 
-    socket.on('shrink', r => safeRadius = r);
-    socket.on('timer', t => timeLeft = t);
-    socket.on('chat', data => {
-      const div = document.createElement('div');
-      div.textContent = data.msg;
-      document.getElementById('chat').prepend(div);
-      setTimeout(()=>div.remove(), 8000);
-    });
-
-    window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
-
-    canvas.addEventListener('click', e => {
-      if (!me?.alive) return;
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left + view.x;
-      const my = e.clientY - rect.top + view.y;
-      socket.emit('shoot', {x: mx, y: my});
-    });
-
-    setInterval(() => {
-      if (!me?.alive) return;
-      let dx = 0, dy = 0;
-      if (keys['w']) dy -= 6;
-      if (keys['s']) dy += 6;
-      if (keys['a']) dx -= 6;
-      if (keys['d']) dx += 6;
-      if (dx || dy) socket.emit('move', {dx, dy});
-    }, 16);
-
-    function loop() {
-      ctx.clearRect(0,0,2000,2000);
-
-      // Draw shrinking zone
-      ctx.fillStyle = '#112211';
-      ctx.beginPath();
-      ctx.arc(1000,1000,safeRadius,0,Math.PI*2);
-      ctx.fill();
-
-      // Camera follow
-      if (me?.alive) {
-        view.x = me.x - innerWidth/2;
-        view.y = me.y - innerHeight/2;
-      }
-      ctx.save();
-      ctx.translate(-view.x, -view.y);
-
-      // Players
-      Object.values(players).forEach(p => {
-        if (!p.alive) return;
-        ctx.fillStyle = p.id === socket.id ? '#00ff00' : '#ff3366';
-        ctx.fillRect(p.x-15, p.y-15, 30, 30);
-        ctx.fillStyle = 'white';
-        ctx.fillText(p.name?.slice(0,12) || 'player', p.x-40, p.y-45);
+    // Generate 99 bots
+    for(let i = 0; i < 99; i++) {
+      bots.push({
+        x: CENTER + (Math.random() - 0.5) * 2500,
+        y: CENTER + (Math.random() - 0.5) * 2500,
+        angle: Math.random() * Math.PI * 2,
+        health: 100,
+        targetX: 0, targetY: 0,
+        state: 'roam', // roam → runToZone → shoot
+        color: `hsl(${i*3.6}, 100%, 50%)`
       });
+    }
+
+    // Trees & grass
+    for(let i = 0; i < 800; i++) {
+      trees.push({
+        x: Math.random() * MAP_SIZE,
+        y: Math.random() * MAP_SIZE,
+        size: 30 + Math.random() * 40
+      });
+    }
+
+    // Loot crates
+    for(let i = 0; i < 40; i++) {
+      loot.push({
+        x: Math.random() * MAP_SIZE,
+        y: Math.random() * MAP_SIZE,
+        taken: false
+      });
+    }
+
+    // Input
+    const keys = {};
+    window.onkeydown = e => keys[e.key.toLowerCase()] = true;
+    window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+    canvas.onmousemove = e => {
+      const dx = e.clientX - innerWidth/2;
+      const dy = e.clientY - innerHeight/2;
+      player.angle = Math.atan2(dy, dx);
+    };
+    canvas.onclick = () => shoot(player);
+
+    function shoot(p) {
+      bullets.push({
+        x: p.x,
+        y: p.y,
+        vx: Math.cos(p.angle) * 20,
+        vy: Math.sin(p.angle) * 20,
+        owner: p === player ? 'player' : 'bot',
+        damage: 34
+      });
+    }
+
+    // Bot AI (simple but deadly)
+    function updateBots() {
+      bots.forEach(bot => {
+        if (bot.health <= 0) return;
+
+        const distToCenter = Math.hypot(bot.x - CENTER, bot.y - CENTER);
+
+        // Prioritize running into zone if outside
+        if (distToCenter > zoneRadius + 50) {
+          bot.state = 'runToZone';
+          const angleToCenter = Math.atan2(CENTER - bot.y, CENTER - bot.x);
+          bot.x += Math.cos(angleToCenter) * 2.5;
+          bot.y += Math.sin(angleToCenter) * 2.5;
+        } 
+        // Inside zone → hunt player
+        else {
+          bot.state = 'hunt';
+          const dx = player.x - bot.x;
+          const dy = player.y - bot.y;
+          const dist = Math.hypot(dx, dy);
+          bot.angle = Math.atan2(dy, dx);
+
+          if (dist > 300) {
+            bot.x += Math.cos(bot.angle) * 1.8;
+            bot.y += Math.sin(bot.angle) * 1.8;
+          }
+          if (dist < 600 && Math.random() < 0.03) {
+            shoot(bot);
+          }
+        }
+      });
+    }
+
+    // Game loop
+    setInterval(() => {
+      // Player movement
+      const speed = keys['shift'] ? 7 : 4;
+      if(keys['w']) player.y -= speed;
+      if(keys['s']) player.y += speed;
+      if(keys['a']) player.x -= speed;
+      if(keys['d']) player.x += speed;
+
+      updateBots();
 
       // Bullets
-      bullets.forEach(b => {
-        ctx.fillStyle = '#ffff00';
-        ctx.fillRect(b.x-4, b.y-4, 8, 8);
+      for(let i = bullets.length-1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+
+        // Hit player
+        if (b.owner !== 'player' && Math.hypot(b.x - player.x, b.y - player.y) < 20) {
+          player.health -= b.damage;
+          bullets.splice(i,1);
+          if (player.health <= 0) {
+            alert(`YOU DIED. Final placement: #${bots.filter(b=>b.health>0).length + 1}\nKills: ${player.kills}`);
+            location.reload();
+          }
+          continue;
+        }
+
+        // Hit bots
+        bots.forEach(bot => {
+          if (bot.health > 0 && Math.hypot(b.x - bot.x, b.y - bot.y) < 20 && b.owner === 'player') {
+            bot.health -= b.damage;
+            if (bot.health <= 0) {
+              player.kills++;
+              document.getElementById('kills').textContent = player.kills;
+              addKillFeed("You killed " + bot.color);
+            }
+          }
+        });
+
+        if (b.x < 0 || b.x > MAP_SIZE || b.y < 0 || b.y > MAP_SIZE) bullets.splice(i,1);
+      }
+
+      // Zone shrink
+      zoneTimer--;
+      document.getElementById('timer').textContent = zoneTimer;
+      if (zoneTimer <= 0) {
+        nextZoneRadius = zoneRadius * 0.7;
+        zoneTimer = Math.max(20, zoneTimer);
+        setTimeout(() => zoneRadius = nextZoneRadius, 8000); // warning phase
+      }
+
+      // Kill outside zone
+      if (Math.hypot(player.x - CENTER, player.y - CENTER) > zoneRadius + 30) {
+        player.health -= 2;
+      }
+
+      // Count alive
+      const alive = 1 + bots.filter(b => b.health > 0).length;
+      document.getElementById('alive').textContent = alive;
+
+      if (alive === 1 && player.health > 0) {
+        alert(`🥇 VICTORY! ${player.kills} KILLS 🥇`);
+        location.reload();
+      }
+
+      render();
+    }, 1000/60);
+
+    function render() {
+      ctx.fillStyle = '#0a1a0a';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // Camera follow player
+      const camX = player.x - innerWidth/2;
+      const camY = player.y - innerHeight/2;
+      ctx.save();
+      ctx.translate(-camX, -camY);
+
+      // Grass texture
+      ctx.fillStyle = '#112211';
+      ctx.fillRect(0,0,MAP_SIZE,MAP_SIZE);
+
+      // Trees
+      trees.forEach(t => {
+        ctx.fillStyle = '#003300';
+        ctx.fillRect(t.x - t.size/2, t.y - t.size/2, t.size, t.size);
+        ctx.fillStyle = '#006600';
+        ctx.beginPath();
+        ctx.arc(t.x, t.y - t.size/3, t.size/2, 0, Math.PI*2);
+        ctx.fill();
       });
+
+      // Loot crates
+      loot.forEach(l => {
+        if (!l.taken && Math.hypot(l.x - player.x, l.y - player.y) < 50) l.taken = true;
+        if (!l.taken) {
+          ctx.fillStyle = '#ff0';
+          ctx.fillRect(l.x-15, l.y-15, 30, 30);
+          ctx.fillStyle = '#ff0';
+          ctx.fillRect(l.x-10, l.y-20, 20, 10);
+        }
+      });
+
+      // Zone circle (glowing)
+      ctx.strokeStyle = '#00ffff88';
+      ctx.lineWidth = 15;
+      ctx.beginPath();
+      ctx.arc(CENTER, CENTER, zoneRadius, 0, Math.PI*2);
+      ctx.stroke();
+
+      // Bots
+      bots.forEach(bot => {
+        if (bot.health <= 0) return;
+        ctx.fillStyle = bot.color;
+        ctx.save();
+        ctx.translate(bot.x, bot.y);
+        ctx.rotate(bot.angle);
+        ctx.fillRect(-12, -12, 24, 24);
+        ctx.fillRect(10, -4, 20, 8); // gun
+        ctx.restore();
+      });
+
+      // Player (neon green)
+      ctx.fillStyle = '#00ff00';
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      ctx.rotate(player.angle);
+      ctx.fillRect(-15, -15, 30, 30);
+      ctx.fillStyle = '#00ff99';
+      ctx.fillRect(15, -5, 25, 10); // gun
+      ctx.restore();
+
+      // Bullets
+      ctx.fillStyle = '#ffff00';
+      bullets.forEach(b => ctx.fillRect(b.x-4, b.y-4, 8, 8));
 
       ctx.restore();
 
-      // Timer bar
-      ctx.fillStyle = '#ff0044';
-      ctx.fillRect(0,0,innerWidth * (timeLeft/45), 10);
+      // Minimap
+      const mini = document.getElementById('minimap');
+      const mctx = mini.getContext('2d');
+      mini.width = 200; mini.height = 200;
+      mctx.fillStyle = '#001100';
+      mctx.fillRect(0,0,200,200);
+      mctx.strokeStyle = '#0f0';
+      mctx.lineWidth = 3;
+      mctx.beginPath();
+      mctx.arc(100,100, (zoneRadius/MAP_SIZE)*100, 0, Math.PI*2);
+      mctx.stroke();
 
-      requestAnimationFrame(loop);
+      // Player dot
+      mctx.fillStyle = '#0f0';
+      mctx.fillRect(100 + (player.x - CENTER)/MAP_SIZE*200 - 3, 100 + (player.y - CENTER)/MAP_SIZE*200 - 3, 6, 6);
+
+      // Bots dots
+      mctx.fillStyle = '#f00';
+      bots.filter(b=>b.health>0).forEach(b => {
+        mctx.fillRect(100 + (b.x - CENTER)/MAP_SIZE*200 - 1, 100 + (b.y - CENTER)/MAP_SIZE*200 - 1, 2, 2);
+      });
     }
-    loop();
+
+    function addKillFeed(msg) {
+      const div = document.createElement('div');
+      div.textContent = msg;
+      div.style.opacity = 1;
+      document.getElementById('killfeed').prepend(div);
+      setTimeout(() => div.style.opacity = 0, 3000);
+    }
+
+    render();
   </script>
 </body>
 </html>
