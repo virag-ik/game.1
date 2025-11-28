@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>HUNTER ASSASSIN SKYSCRAPER ROYALE</title>
+  <meta charset="utf-8">
+  <style>
+    body{margin:0;background:#000;overflow:hidden;font-family:monospace;user-select:none}
+    canvas{image-rendering:pixelated}
+
+    #ui{
+      position:absolute;top:10px;left:10px;color:#0f0;
+      text-shadow:0 0 8px #0f0;z-index:10
+    }
+    #killfeed{
+      position:absolute;top:60px;right:20px;color:#f33;
+      font-weight:bold;z-index:10
+    }
+    #floorDisplay{
+      position:absolute;top:10px;right:260px;color:#0ff;
+      font-size:20px;text-shadow:0 0 10px #0ff;z-index:10
+    }
+
+    /* MINI MAP - moved to top right */
+    #minimap{
+      position:absolute;top:10px;right:10px;width:220px;height:220px;
+      border:3px solid #0f0;opacity:0.9;z-index:10
+    }
+
+    /* HEALTH BAR - top center */
+    #healthUI{
+      position:absolute;top:10px;left:50%;transform:translateX(-50%);
+      color:#fff;font-size:12px;z-index:10;
+    }
+    #healthBarBG{
+      width:380px;height:26px;border:3px solid #0f0;
+      background:#220;box-shadow:0 0 15px #000;
+    }
+    #healthBar{
+      height:100%;width:100%;
+      background:#0f0;transition:width 0.1s linear;
+    }
+
+    /* START MENU */
+    #startMenu{
+      position:fixed;inset:0;background:#000a;
+      display:flex;align-items:center;justify-content:center;
+      z-index:20;color:#0f0;text-align:center;
+    }
+    #startMenu button{
+      padding:12px 36px;font-size:20px;
+      border:2px solid #0f0;background:#001900;color:#0f0;
+      cursor:pointer;box-shadow:0 0 16px #0f0;
+    }
+
+    /* JOYSTICK */
+    #joystickContainer{
+      position:absolute;bottom:40px;right:40px;width:140px;height:140px;
+      touch-action:none;z-index:15;
+    }
+    #joystickBase{
+      position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      width:100px;height:100px;border-radius:50%;
+      border:3px solid #0f0;background:#003000aa;
+    }
+    #joystickKnob{
+      position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      width:45px;height:45px;border-radius:50%;background:#00ff00;
+      box-shadow:0 0 12px #0f0;
+    }
+
+    /* FIRE BUTTON - moved bottom-left */
+    #fireBtn{
+      position:absolute;bottom:60px;left:50px;
+      padding:16px 26px;font-size:20px;
+      border:2px solid #f33;background:#440000;color:#ff6666;
+      border-radius:8px;z-index:20;cursor:pointer;
+      box-shadow:0 0 15px #f00;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- START MENU -->
+  <div id="startMenu"><button id="startBtn">START GAME</button></div>
+
+  <div id="ui">
+    <div>ALIVE: <span id="alive">100</span></div>
+    <div>KILLS: <span id="kills">0</span></div>
+  </div>
+  <div id="floorDisplay">FLOOR <span id="floor">0</span></div>
+  <div id="killfeed"></div>
+
+  <!-- MINIMAP -->
+  <canvas id="minimap"></canvas>
+
+  <!-- HEALTH BAR -->
+  <div id="healthUI">
+    <div id="healthBarBG"><div id="healthBar"></div></div>
+  </div>
+
+  <!-- JOYSTICK -->
+  <div id="joystickContainer">
+    <div id="joystickBase"></div>
+    <div id="joystickKnob"></div>
+  </div>
+
+  <!-- FIRE BUTTON -->
+  <button id="fireBtn">FIRE</button>
+
+<script>
+/* ---------- CANVAS SETUP ---------- */
+const canvas = document.createElement("canvas");
+canvas.width = innerWidth; canvas.height = innerHeight;
+document.body.appendChild(canvas);
+const ctx = canvas.getContext("2d");
+
+const healthBarEl = document.getElementById("healthBar");
+const fireBtn = document.getElementById("fireBtn");
+const startBtn = document.getElementById("startBtn");
+const joystickContainer = document.getElementById("joystickContainer");
+const joystickBase = document.getElementById("joystickBase");
+const joystickKnob = document.getElementById("joystickKnob");
+
+const MAP = 12000;
+const CENTER = MAP/2;
+const FLOORS = 10;
+let currentFloor = 0;
+let gameRunning = false;
+let gameOver = false;
+
+const player = {
+  x: CENTER, y: CENTER, floor: 0,
+  angle: 0, speed: 0,
+  health: 100, kills: 0,
+  recoil: 0, shooting:false,
+  anim:"idle", frame:0
+};
+
+const entities = [];
+const bullets = [];
+const walls = [];
+const stairs = [];
+
+/* ---------- WORLD GENERATION ---------- */
+for(let f=0;f<FLOORS;f++){
+  for(let i=0;i<150;i++){
+    walls.push({x:800+Math.random()*(MAP-1600),y:800+Math.random()*(MAP-1600),
+                w:140+Math.random()*260,h:140+Math.random()*260,floor:f});
+  }
+  for(let i=0;i<20;i++){
+    stairs.push({x:1000+Math.random()*(MAP-2000),y:1000+Math.random()*(MAP-2000),floor:f});
+  }
+}
+
+for(let i=0;i<99;i++){
+  entities.push({
+    x:Math.random()*MAP,y:Math.random()*MAP,floor:Math.floor(Math.random()*FLOORS),
+    angle:Math.random()*Math.PI*2,health:100,speed:0,state:"roam",
+    recoil:0,shooting:false,anim:"idle",frame:0,color:`hsl(${i*3.6},80%,50%)`,
+    deathTimer:0,squash:1
+  });
+}
+
+/* ---------- JOYSTICK AIM ONLY ---------- */
+let joyActive=false, joyCenter={x:0,y:0};
+const joyMax=50;
+
+function moveJoystick(e){
+  const rect=joystickBase.getBoundingClientRect();
+  joyCenter.x=rect.left+rect.width/2;
+  joyCenter.y=rect.top+rect.height/2;
+  const dx=e.clientX-joyCenter.x, dy=e.clientY-joyCenter.y;
+  const dist=Math.min(Math.hypot(dx,dy),joyMax);
+  const angle=Math.atan2(dy,dx);
+  joystickKnob.style.transform=`translate(calc(-50% + ${Math.cos(angle)*dist}px),
+                                           calc(-50% + ${Math.sin(angle)*dist}px))`;
+  player.angle=angle;
+}
+
+joystickContainer.addEventListener("pointerdown",e=>{
+  joyActive=true; joystickContainer.setPointerCapture(e.pointerId); moveJoystick(e);
+});
+joystickContainer.addEventListener("pointermove",e=>{if(joyActive)moveJoystick(e)});
+joystickContainer.addEventListener("pointerup",e=>{
+  joyActive=false; joystickKnob.style.transform="translate(-50%,-50%)";
+});
+
+/* ---------- SHOOTING ---------- */
+function shoot(who){
+  if(who.recoil>0) return;
+  who.recoil=10; who.shooting=true;
+
+  bullets.push({
+    x: who.x+Math.cos(who.angle)*45,
+    y: who.y+Math.sin(who.angle)*45,
+    vx:Math.cos(who.angle)*23,vy:Math.sin(who.angle)*23,
+    owner:who===player?'player':'bot'
+  });
+}
+fireBtn.onclick=()=>{ if(gameRunning) shoot(player) };
+window.onkeydown=e=>{ if(e.code==="Space") shoot(player) };
+
+/* ---------- BOT AI (UNCHANGED SHORT) ---------- */
+function updateBots(){ entities.forEach(bot=>{ if(bot.health<=0)return;
+  let target=player;
+  bot.angle=Math.atan2(target.y-bot.y,target.x-bot.x);
+  bot.x+=Math.cos(bot.angle)*1.2;
+  bot.y+=Math.sin(bot.angle)*1.2;
+  if(Math.random()<0.015) shoot(bot);
+});}
+
+/* ---------- HEALTH UI ---------- */
+function updateHealthBar(){
+  const hp=Math.max(0,Math.min(100,player.health));
+  healthBarEl.style.width=hp+"%";
+  healthBarEl.style.background=hp>60?"#0f0":hp>30?"#ff0":"#f33";
+}
+
+/* ---------- MAIN LOOP ---------- */
+function gameLoop(){
+  if(!gameRunning) return;
+
+  // Movement
+  player.speed=(keys['shift']?5:3);
+  if(keys['w']) player.y-=player.speed;
+  if(keys['s']) player.y+=player.speed;
+  if(keys['a']) player.x-=player.speed;
+  if(keys['d']) player.x+=player.speed;
+
+  updateBots();
+
+  // Bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    b.x+=b.vx; b.y+=b.vy;
+
+    if(b.owner!=='player' &&
+      Math.hypot(b.x-player.x,b.y-player.y)<25 &&
+      player.floor===currentFloor){
+        player.health-=0; bullets.splice(i,1);
+        updateHealthBar();
+        if(player.health<=0) setTimeout(()=>location.reload(),600);
+        continue;
+    }
+  }
+
+  render();
+}
+
+/* ---------- RENDER ---------- */
+function drawHuman(e,isPlayer){
+  ctx.save();
+  ctx.translate(e.x,e.y);
+  ctx.rotate(e.angle);
+
+  // body
+  ctx.fillStyle=isPlayer?"#00ff00":e.color;
+  ctx.fillRect(-14,-28,28,48);
+
+  // head
+  ctx.fillStyle=isPlayer?"#99ffdd":"#fff";
+  ctx.beginPath(); ctx.arc(0,-34,12,0,Math.PI*2); ctx.fill();
+
+  // gun front (not side)
+  ctx.fillStyle="#ffff00";
+  ctx.fillRect(-6,-8,12,26);
+
+  ctx.restore();
+}
+
+function render(){
+  ctx.fillStyle="#080808"; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  const camX=player.x-innerWidth/2;
+  const camY=player.y-innerHeight/2;
+  ctx.save();
+  ctx.translate(-camX,-camY);
+  ctx.globalAlpha=Math.max(0.3,1-currentFloor*0.08);
+
+  walls.forEach(w=>{if(w.floor===currentFloor){
+    ctx.fillStyle="#111"; ctx.fillRect(w.x-w.w/2,w.y-w.h/2,w.w,w.h);
+  }});
+
+  stairs.forEach(s=>{if(s.floor===currentFloor){
+    ctx.fillStyle="#00ffff44"; ctx.fillRect(s.x-30,s.y-30,60,60);
+  }});
+
+  drawHuman(player,true);
+  entities.filter(e=>e.health>0&&e.floor===currentFloor)
+          .forEach(e=>drawHuman(e,false));
+
+  ctx.restore();
+}
+
+/* ---------- START ---------- */
+startBtn.onclick=()=>{
+  document.getElementById("startMenu").style.display="none";
+  gameRunning=true;
+  setInterval(gameLoop,1000/60);
+};
+
+const keys={};
+window.onkeydown=e=>{keys[e.key.toLowerCase()]=true};
+window.onkeyup=e=>{keys[e.key.toLowerCase()]=false};
+updateHealthBar();
+render();
+</script>
+</body>
+</html>
