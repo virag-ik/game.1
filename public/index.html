@@ -1,13 +1,353 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>DESCENT – Last Floor Standing</title>
-  <script type="module" src="/src/main.js"></script>
+  <title>HUNTER ASSASSIN SKYSCRAPER ROYALE</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <style>
-    body { margin:0; background:#000; overflow:hidden; touch-action: none; }
+    body{margin:0;background:#000;overflow:hidden;font-family:monospace;user-select:none}
+    canvas{image-rendering:pixelated;display:block}
+    #ui{position:absolute;top:10px;left:10px;color:#0f0;text-shadow:0 0 8px #0f0;z-index:10;font-size:14px}
+    #killfeed{position:absolute;top:60px;right:20px;color:#f33;font-weight:bold;z-index:10;font-size:14px}
+    #floorDisplay{position:absolute;top:10px;right:260px;color:#0ff;font-size:20px;text-shadow:0 0 10px #0ff;z-index:10}
+    #minimap{position:absolute;top:10px;right:10px;width:200px;height:200px;border:3px solid #0f0;background:#0008;z-index:10}
+    #healthUI{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:10}
+    #healthBarBG{width:300px;height:24px;border:3px solid #0f0;background:#300;box-shadow:0 0 15px #000}
+    #healthBar{height:100%;width:100%;background:#0f0;transition:width .2s}
+    #startMenu{position:fixed;inset:0;background:#000d;display:flex;align-items:center;justify-content:center;z-index:20;color:#0f0;text-align:center}
+    #startMenu button{padding:16px 40px;font-size:24px;border:3px solid #0f0;background:#002200;color:#0f0;cursor:pointer;box-shadow:0 0 20px #0f0}
+    #joystickContainer{position:absolute;bottom:30px;left:30px;width:140px;height:140px;touch-action:none;z-index:15}
+    #joystickBase{width:120px;height:120px;border-radius:50%;border:4px solid #0f0;background:#003300aa;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+    #knob{width:50px;height:50px;border-radius:50%;background:#00ff00;box-shadow:0 0 15px #0f0;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+    #fireBtn{position:absolute;bottom:50px;right:30px;width:90px;height:90px;border-radius:50%;border:4px solid #f33;background:#500;color:#ff6666;font-size:16px;font-weight:bold;z-index:20;box-shadow:0 0 20px #f00}
   </style>
 </head>
-<body></body>
+<body>
+  <div id="startMenu"><button id="startBtn">START GAME</button></div>
+  <div id="ui">
+    <div>ALIVE: <span id="alive">100</span></div>
+    <div>KILLS: <span id="kills">0</span></div>
+  </div>
+  <div id="floorDisplay">FLOOR <span id="floor">1</span></div>
+  <div id="killfeed"></div>
+  <canvas id="minimap"></canvas>
+  <div id="healthUI"><div id="healthBarBG"><div id="healthBar"></div></div></div>
+
+  <div id="joystickContainer">
+    <div id="joystickBase"></div>
+    <div id="knob"></div>
+  </div>
+  <button id="fireBtn">FIRE</button>
+
+<script>
+const canvas = document.createElement("canvas");
+canvas.width = innerWidth; canvas.height = innerHeight;
+document.body.appendChild(canvas);
+const ctx = canvas.getContext("2d");
+const miniCtx = document.getElementById("minimap").getContext("2d");
+document.getElementById("minimap").width = 200;
+document.getElementById("minimap").height = 200;
+
+const MAP = 12000, CENTER = MAP/2, FLOORS = 10;
+let currentFloor = 0, gameRunning = false;
+
+const player = {
+  x: CENTER, y: CENTER, floor: 0, angle: 0,
+  health: 100, maxHealth: 100, kills: 0,
+  recoil: 0, shooting: false
+};
+
+let entities = [], bullets = [], walls = [], stairs = [], particles = [];
+let keys = {};
+
+// ============== WORLD GEN ==============
+for(let f=0; f<FLOORS; f++){
+  for(let i=0; i<140; i++){
+    walls.push({x:800+Math.random()*(MAP-1600), y:800+Math.random()*(MAP-1600),
+                w:120+Math.random()*300, h:120+Math.random()*300, floor:f});
+  }
+  for(let i=0; i<18; i++){
+    stairs.push({x:1000+Math.random()*(MAP-2000), y:1000+Math.random()*(MAP-2000), floor:f,
+                 to: f < FLOORS-1 ? f+1 : f-1});
+  }
+}
+for(let i=0; i<99; i++){
+  entities.push({
+    x: Math.random()*MAP, y: Math.random()*MAP,
+    floor: Math.floor(Math.random()*FLOORS),
+    angle: Math.random()*Math.PI*2, health:100,
+    color: `hsl(${i*3.6},100%,50%)`, recoil:0, shooting:false
+  });
+}
+
+// ============== JOYSTICK ==============
+const joy = {active:false, x:0, y:0};
+const joyContainer = document.getElementById("joystickContainer");
+const knob = document.getElementById("knob");
+
+joyContainer.addEventListener("pointerdown", e=>{ joy.active=true; joyContainer.setPointerCapture(e.pointerId); updateJoy(e); });
+joyContainer.addEventListener("pointermove", e=>{ if(joy.active) updateJoy(e); });
+joyContainer.addEventListener("pointerup", ()=>{ joy.active=false; knob.style.transform="translate(-50%,-50%)"; });
+
+function updateJoy(e){
+  const rect = joyContainer.getBoundingClientRect();
+  const cx = rect.left + rect.width/2;
+  const cy = rect.top + rect.height/2;
+  let dx = e.clientX - cx;
+  let dy = e.clientY - cy;
+  const dist = Math.min(Math.hypot(dx,dy), 60);
+  const angle = Math.atan2(dy, dx);
+  dx = Math.cos(angle) * dist;
+  dy = Math.sin(angle) * dist;
+  knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`; // FIXED LINE
+  joy.x = dx / 60;
+  joy.y = dy / 60;
+  player.angle = angle;
+}
+
+// ============== INPUT ==============
+document.getElementById("fireBtn").addEventListener("pointerdown", ()=>{ if(gameRunning) shoot(player); });
+window.addEventListener("keydown", e=>{
+  keys[e.key.toLowerCase()] = true;
+  if(e.code==="Space"){ e.preventDefault(); shoot(player); }
+});
+window.addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+
+// ============== SHOOTING ==============
+function shoot(shooter){
+  if(shooter.recoil>0) return;
+  shooter.recoil = 12;
+  shooter.shooting = true;
+
+  const bx = shooter.x + Math.cos(shooter.angle)*50;
+  const by = shooter.y + Math.sin(shooter.angle)*50;
+  bullets.push({x:bx, y:by, vx:Math.cos(shooter.angle)*28, vy:Math.sin(shooter.angle)*28, owner:shooter===player?"player":"bot", life:30});
+
+  // Muzzle flash
+  for(let i=0;i<8;i++){
+    const a = shooter.angle + (Math.random()-0.5)*0.6;
+    particles.push({x:bx,y:by, vx:Math.cos(a)*8, vy:Math.sin(a)*8, life:10, color:"#ff0"});
+  }
+}
+
+// ============== BOT AI ==============
+function updateBots(){
+  entities.forEach(bot=>{
+    if(bot.health<=0) return;
+    const dx = player.x - bot.x;
+    const dy = player.y - bot.y;
+    const dist = Math.hypot(dx,dy);
+    bot.angle = Math.atan2(dy,dx);
+
+    if(dist<600 && bot.floor===player.floor){
+      bot.x += Math.cos(bot.angle)*2.2;
+      bot.y += Math.sin(bot.angle)*2.2;
+      if(dist<400 && Math.random()<0.04) shoot(bot);
+    } else {
+      if(Math.random()<0.02) bot.angle += (Math.random()-0.5)*0.8;
+      bot.x += Math.cos(bot.angle)*0.8;
+      bot.y += Math.sin(bot.angle)*0.8;
+    }
+  });
+}
+
+// ============== UPDATE ==============
+function update(){
+  if(!gameRunning) return;
+
+  const speed = keys['shift'] ? 5.5 : 3.8;
+  if(joy.active){
+    player.x += joy.x * speed;
+    player.y += joy.y * speed;
+  } else {
+    if(keys['w']||keys['arrowup']) player.y -= speed;
+    if(keys['s']||keys['arrowdown']) player.y += speed;
+    if(keys['a']||keys['arrowleft']) player.x -= speed;
+    if(keys['d']||keys['arrowright']) player.x += speed;
+  }
+
+  player.x = Math.max(100, Math.min(MAP-100, player.x));
+  player.y = Math.max(100, Math.min(MAP-100, player.y));
+
+  // Stairs
+  stairs.forEach(s=>{
+    if(s.floor===player.floor && Math.hypot(s.x-player.x,s.y-player.y)<60){
+      player.floor = s.to;
+      currentFloor = s.to;
+      document.getElementById("floor").textContent = currentFloor+1;
+    }
+  });
+
+  updateBots();
+
+  // Bullets update + collision
+  for(let i=bullets.length-1;i>=0;i--){
+    const b = bullets[i];
+    b.x += b.vx; b.y += b.vy; b.life--;
+
+    if(b.owner==="bot" && Math.hypot(b.x-player.x,b.y-player.y)<25 && player.floor===currentFloor){
+      player.health -= 34;
+      updateHealth();
+      addBlood(b.x,b.y);
+      bullets.splice(i,1);
+      if(player.health<=0) gameOver();
+      continue;
+    }
+
+    for(let j=0;j<entities.length;j++){
+      const e = entities[j];
+      if(e.health>0 && b.owner==="player" && Math.hypot(b.x-e.x,b.y-e.y)<25 && e.floor===currentFloor){
+        e.health -= 100;
+        player.kills++;
+        document.getElementById("kills").textContent = player.kills;
+        addKillfeed("You eliminated an assassin!");
+        addBlood(b.x,b.y);
+        bullets.splice(i,1);
+        break;
+      }
+    }
+
+    if(b.life<=0) bullets.splice(i,1);
+  }
+
+  if(player.recoil>0) player.recoil--;
+  entities.forEach(e=>{ if(e.recoil>0) e.recoil--; });
+
+  particles = particles.filter(p=>{ p.x+=p.vx; p.y+=p.vy; p.life--; return p.life>0; });
+}
+
+function updateHealth(){
+  const hp = Math.max(0, player.health);
+  document.getElementById("healthBar").style.width = (hp/player.maxHealth*100)+"%";
+  document.getElementById("healthBar").style.background = hp>60?"#0f0":hp>30?"#ff0":"#f00";
+  document.getElementById("alive").textContent = 1 + entities.filter(e=>e.health>0).length;
+}
+
+function addBlood(x,y){
+  for(let i=0;i<12;i++){
+    const a = Math.random()*Math.PI*2;
+    particles.push({x,y, vx:Math.cos(a)*(3+Math.random()*5), vy:Math.sin(a)*(3+Math.random()*5), life:30+Math.random()*20, color:"#800"});
+  }
+}
+
+function addKillfeed(msg){
+  const d = document.createElement("div");
+  d.textContent = msg;
+  d.style.opacity=1;
+  document.getElementById("killfeed").prepend(d);
+  setTimeout(()=>{d.style.opacity=0},2000);
+  setTimeout(()=>{d.remove()},3000);
+}
+
+function gameOver(){
+  gameRunning = false;
+  alert("YOU DIED! Final kills: " + player.kills);
+  location.reload();
+}
+
+// ============== RENDER ==============
+function render(){
+  ctx.fillStyle = "#0a0a0a"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  const camX = player.x - canvas.width/2;
+  const camY = player.y - canvas.height/2;
+  ctx.save();
+  ctx.translate(-camX, -camY);
+
+  ctx.globalAlpha = Math.max(0.3, 1-currentFloor*0.08);
+  walls.forEach(w=>{ if(w.floor===currentFloor){
+    ctx.fillStyle="#111"; ctx.fillRect(w.x-w.w/2,w.y-w.h/2,w.w,w.h);
+  }});
+
+  stairs.forEach(s=>{ if(s.floor===currentFloor){
+    ctx.fillStyle="#00ffffff"; ctx.fillRect(s.x-40,s.y-40,80,80);
+    ctx.strokeStyle="#0ff"; ctx.lineWidth=6; ctx.strokeRect(s.x-40,s.y-40,80,80);
+  }});
+
+  entities.forEach(e=>{ if(e.health>0 && e.floor===currentFloor) drawAssassin(e,false); });
+  drawAssassin(player,true);
+
+  // Bullets
+  bullets.forEach(b=>{
+    ctx.fillStyle="#ff0"; ctx.fillRect(b.x-4,b.y-4,8,8);
+    ctx.fillStyle="#ffff80"; ctx.fillRect(b.x-2,b.y-2,4,4);
+  });
+
+  // Particles
+  particles.forEach(p=>{
+    ctx.globalAlpha = p.life/30;
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-3,p.y-3,6,6);
+  });
+
+  ctx.restore();
+
+  // MINIMAP
+  miniCtx.fillStyle="#000"; miniCtx.fillRect(0,0,200,200);
+  const scale = 200/MAP;
+  walls.forEach(w=>{ if(w.floor===currentFloor){
+    miniCtx.fillStyle="#222";
+    miniCtx.fillRect(w.x*scale-w.w/2*scale, w.y*scale-w.h/2*scale, w.w*scale, w.h*scale);
+  }});
+  miniCtx.fillStyle="#0f0"; miniCtx.fillRect(player.x*scale-4,player.y*scale-4,8,8);
+  entities.forEach(e=>{ if(e.health>0 && e.floor===currentFloor){
+    miniCtx.fillStyle="#f00"; miniCtx.fillRect(e.x*scale-3,e.y*scale-3,6,6);
+  }});
+}
+
+function drawAssassin(e,isPlayer){
+  ctx.save();
+  ctx.translate(e.x,e.y);
+  ctx.rotate(e.angle);
+
+  // Shadow
+  ctx.fillStyle="rgba(0,0,0,0.4)";
+  ctx.ellipse(0,20,18,8,0,0,Math.PI*2);
+  ctx.fill();
+
+  // Body
+  ctx.fillStyle = isPlayer ? "#00ff00" : "#c00";
+  ctx.fillRect(-12,-24,24,44);
+
+  // Head
+  ctx.fillStyle = isPlayer ? "#88ffcc" : "#fcc";
+  ctx.beginPath(); ctx.arc(0,-30,11,0,Math.PI*2); ctx.fill();
+
+  // Gun
+  ctx.fillStyle = "#ccc";
+  ctx.fillRect(12,-6,28,10);
+  if(e.shooting || e.recoil>8){
+    ctx.fillStyle="#ff0";
+    ctx.fillRect(8,-10,30,8); // muzzle flash
+  }
+
+  // Enemy vision cone
+  if(!isPlayer){
+    ctx.globalAlpha=0.15;
+    ctx.fillStyle="#f00";
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,200,-0.5,0.5,false); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
+}
+
+// ============== MAIN LOOP ==============
+function loop(){
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+document.getElementById("startBtn").onclick = ()=>{
+  document.getElementById("startMenu").style.display="none";
+  gameRunning = true;
+  updateHealth();
+  document.getElementById("floor").textContent = currentFloor+1;
+  loop();
+};
+
+render();
+updateHealth();
+</script>
+</body>
 </html>
